@@ -162,6 +162,10 @@ body { min-height:100vh; display:flex; flex-direction:column; justify-content:ce
 .logo-text { font-size:38px; font-weight:700; background:linear-gradient(135deg,#fff 0%,var(--accent-blue) 50%,rgba(255,255,255,0.8) 100%); background-size:200% auto; -webkit-background-clip:text; -webkit-text-fill-color:transparent; animation:logoShimmer 4s linear infinite; letter-spacing:-0.5px; }
 @keyframes logoShimmer { 0%{background-position:0% center;} 100%{background-position:200% center;} }
 .hero-tagline { font-size:13px; color:var(--text-dim); letter-spacing:0.5px; }
+#registrationCounter { display:flex; align-items:center; gap:7px; margin-top:-10px; padding:8px 13px; border:1px solid var(--glass-border); border-radius:18px; background:var(--glass-bg); color:var(--text-dim); font-size:11px; }
+#registrationCounter strong { color:var(--accent-blue); font-size:13px; font-variant-numeric:tabular-nums; }
+#registrationCounter .registration-live-dot { width:7px; height:7px; border-radius:50%; background:var(--accent-reward); box-shadow:0 0 8px var(--accent-reward); }
+#registrationCounter[data-state="unavailable"] .registration-live-dot { background:#f87171; box-shadow:0 0 8px #f87171; }
 .fade-out-cinematic { opacity:0 !important; transform:scale(1.15) translateY(-40px) !important; filter:blur(25px) !important; pointer-events:none; }
 #app { display:none; width:100%; }
 .fade-in-cinematic { animation:appEnter 1.2s var(--ease-spring) both; }
@@ -730,6 +734,10 @@ select option { background:#0f172a; color:white; }
     <button class="btn-primary" id="enterWorkspaceBtn" style="max-width:220px;margin-top:8px;">
         Enter Workspace ✦
     </button>
+    <p id="registrationCounter" role="status" aria-live="polite" title="Live first-time name registrations">
+        <span class="registration-live-dot" aria-hidden="true"></span>
+        <span><strong id="registeredPeopleCount">—</strong> registered learners</span>
+    </p>
 </div>
 
 <!-- ═══ MAIN APP ═══ -->
@@ -1563,8 +1571,20 @@ function showPersonalLogin(onSuccess){
     const submit=()=>{
         const name=inp.value.trim();
         if(name.length<2){err.textContent="Name must be at least 2 characters.";err.style.display="block";inp.focus();return;}
+        const isNewNameRegistration=!personalUserName;
+        if(isNewNameRegistration){
+            let registrationId=localStorage.getItem("ff_user_uid");
+            if(!registrationId){
+                registrationId='usr_'+Math.random().toString(36).substring(2,11);
+                localStorage.setItem("ff_user_uid",registrationId);
+            }
+            localStorage.setItem("ff_pending_name_registration",registrationId);
+        }
         personalUserName=name;SE.set(SK.USERNAME,name);modal.classList.remove("show");
         btn.removeEventListener("click",submit);inp.removeEventListener("keydown",keyHandler);
+        if(isNewNameRegistration&&typeof window.registerFocusFlowName==="function"){
+            window.registerFocusFlowName().catch(()=>{});
+        }
         onSuccess();
     };
     const keyHandler=e=>{if(e.key==="Enter")submit();};
@@ -2792,7 +2812,7 @@ document.addEventListener("DOMContentLoaded",()=>{
 ════════════════════════════════════════════ -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getDatabase, ref, set, get, onValue, remove, update, push, onDisconnect, off } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+import { getDatabase, ref, set, get, onValue, remove, update, push, onDisconnect, off, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
 const firebaseConfig = {
     apiKey: "AIzaSyD28vZsOQGTG3HQKX_MsGw9bYnOK9JYDEY",
@@ -2814,6 +2834,46 @@ function escHtml(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt
 function addListener(refObj,cb){onValue(refObj,cb);activeListeners.push({refObj,cb});}
 function detachAll(){activeListeners.forEach(({refObj,cb})=>{try{off(refObj,'value',cb);}catch(_){}});activeListeners=[];}
 currentUserId=generateUserId();
+
+const registrationCountRef=ref(db,"registrationStats/total");
+const registrationCountLabel=document.getElementById("registeredPeopleCount");
+const registrationCounter=document.getElementById("registrationCounter");
+function markRegistrationCounterUnavailable(){
+    if(registrationCountLabel)registrationCountLabel.textContent="—";
+    if(registrationCounter){
+        registrationCounter.dataset.state="unavailable";
+        registrationCounter.title="Live registration count is temporarily unavailable";
+    }
+}
+onValue(registrationCountRef,snapshot=>{
+    const count=Number(snapshot.val()||0);
+    if(!Number.isSafeInteger(count)||count<0){markRegistrationCounterUnavailable();return;}
+    if(registrationCountLabel)registrationCountLabel.textContent=count.toLocaleString();
+    if(registrationCounter){
+        registrationCounter.dataset.state="ready";
+        registrationCounter.title="Live first-time name registrations";
+    }
+},markRegistrationCounterUnavailable);
+window.registerFocusFlowName=async function(){
+    const pendingId=localStorage.getItem("ff_pending_name_registration");
+    if(!pendingId)return;
+    try{
+        await runTransaction(ref(db,"registrationStats"),current=>{
+            const stats=current&&typeof current==="object"?current:{};
+            const registrations=stats.registrations&&typeof stats.registrations==="object"?stats.registrations:{};
+            if(registrations[pendingId])return;
+            const total=Number.isSafeInteger(stats.total)&&stats.total>=0?stats.total:0;
+            return{total:total+1,registrations:{...registrations,[pendingId]:true}};
+        });
+        localStorage.removeItem("ff_pending_name_registration");
+    }catch(error){
+        markRegistrationCounterUnavailable();
+        throw error;
+    }
+};
+if(localStorage.getItem("ff_pending_name_registration")){
+    window.registerFocusFlowName().catch(()=>{});
+}
 
 function showUsernameModal(onSuccess){
     const modal=document.getElementById("usernameModal"),inp=document.getElementById("usernameModalInput"),err=document.getElementById("usernameErrorMsg"),btn=document.getElementById("usernameSubmitBtn");
